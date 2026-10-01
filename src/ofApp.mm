@@ -2,401 +2,352 @@
 
 //--------------------------------------------------------------
 void ofApp::setup(){
-    grabberDeviceID = 1;
-    grabber.setDeviceID(grabberDeviceID);
-    grabber.listDevices();
-    
-    if(!grabber.initGrabber(1080, 1920)){
-        ofLogError() << "Video grabber initialization failed!";
-    }
-    grabber.listDevices();
-    
-    ofSetFrameRate(50);
-    firstRun = true;
-    isRecording = false;
-    addFrame =  0;
-    ofSetOrientation(OF_ORIENTATION_DEFAULT); // Set to vertical if supported
-    
-    imageArray.reserve(ARRAYMAX); // Preallocate memory for frames
-    
-    // Retrieve aspect ratios
-    cameraAspectRatio = grabber.getWidth() / grabber.getHeight();
-    screenAspectRatio = ofGetWidth() / ofGetHeight();
-    
-    // Calculate the maximum height as 90% of the screen height
-    float maxHeight = ofGetHeight() * 0.65;
-    
-    // Determine the scaling factor based on the maximum allowable height
-    scale = maxHeight / grabber.getHeight();  // Start with scaling to the maximum height
-    scaledWidth = grabber.getWidth() * scale;
-    scaledHeight = grabber.getHeight() * scale;
-    
-    // If scaling to maximum height makes the width too large, adjust based on width
-    if (scaledWidth > ofGetWidth()) {
-        scale = ofGetWidth() / grabber.getWidth();  // Scale based on width to fit the screen
-        scaledWidth = grabber.getWidth() * scale;
-        scaledHeight = grabber.getHeight() * scale;
-    }
-    
-    // Position the image centered horizontally and vertically
-    x = (ofGetWidth() - scaledWidth) / 2;  // Center horizontally
-    y = (ofGetHeight() - scaledHeight) / 2;  // Center vertically
-    
-    // In cases where the scaled width is wider than the screen
-    if (scaledWidth > ofGetWidth()) {
-        x = -(scaledWidth - ofGetWidth()) / 2;  // Negative X to center the oversized image
-    }
-    
-    maintextFont.load("gui_resources/Gaultier-Regular.ttf", 50);
-    giantCounterFont.load("gui_resources/Gaultier-Regular.ttf", 300);
-    textYPosition = y / 2; // Center text in the space above the camera feed
-    
-    
-    
-    operationMode = MODE_RECORD_READY;
-    ofSetLogLevel(OF_LOG_VERBOSE);
-    ofLogVerbose("Current cam info") << "Cam width: " + ofToString(grabber.getWidth()) << " Cam height: " + ofToString(grabber.getHeight()) << " Screen width: " <<ofGetWidth() << " Screen height: " << ofGetHeight() << " Scale: " << scale << " Scaled width: " << scaledWidth << " Scaled height: " << scaledHeight;
-    
+    ofSetFrameRate(60);
+    ofSetLogLevel(OF_LOG_NOTICE);
+
+    float shortSide = std::min(ofGetWidth(), ofGetHeight());
+    mainTextFont.load("gui_resources/Gaultier-Regular.ttf", shortSide / 26);
+    giantCounterFont.load("gui_resources/Gaultier-Regular.ttf", shortSide / 2.5);
+
+    beepSound.load("sounds/beep.wav");
+    goSound.load("sounds/go.wav");
+    beepSound.setMultiPlay(true);
+
     setupButtons();
-    
-    
+
+    findCameras();
+    startCamera(frontCameraID >= 0 ? frontCameraID : 0);
+
+    frames.reserve(MAX_FRAMES);
+    applyOrientation(ofGetOrientation());
 }
 
 //--------------------------------------------------------------
 void ofApp::update(){
     grabber.update();
-    if (isRecording) {
-        if (grabber.isFrameNew()) {
-            if (addFrame >= ARRAYMAX) {
-                isRecording = false;
-                firstRun = false;
-                ofLogNotice() << "Recording Stopped";
-                addFrame = 0;
-                frameToPlay = 0;
-                operationMode = MODE_PLAYBACK;
-                
-            } else {
-                ofPixels flippedPixels = grabber.getPixels();
-                flippedPixels.mirror(false, true); // Flip pixels horizontally
-                imageArray.emplace_back(flippedPixels);
-                ofLogNotice() << "Frame " << addFrame + 1 << " added";
-                addFrame++;
-                frameToPlay = 0;
+
+    if (mode == MODE_COUNTING_DOWN) {
+        int remaining = countdownMillis - int(ofGetElapsedTimeMillis() - countdownStart);
+        if (remaining <= 0) {
+            goSound.play();
+            startRecording();
+        } else {
+            // One beep per second, then three quick beeps in the last second,
+            // like the iOS camera timer.
+            int beat = remaining > 1000 ? int(std::ceil(remaining / 1000.0f))
+                                        : 100 + (1000 - remaining) / 334;
+            if (beat != lastBeepSecond) {
+                lastBeepSecond = beat;
+                beepSound.play();
             }
         }
     }
-    
-    if (isCountingDown) {
-        int currentTime = ofGetElapsedTimeMillis();
-        int elapsedTime = currentTime - startTime;
-        
-        // Check if countdown is complete
-        if (elapsedTime >= countdownTime) {
-            isCountingDown = false;
-            startRecording(); // Call the recording function when countdown ends
+
+    if (mode == MODE_RECORDING && grabber.isFrameNew()) {
+        ofPixels pixels = grabber.getPixels();
+        float s = float(MAX_STORED_SIZE) / std::max(pixels.getWidth(), pixels.getHeight());
+        if (s < 1.0f) {
+            pixels.resize(pixels.getWidth() * s, pixels.getHeight() * s);
+        }
+        frames.push_back(std::move(pixels));
+        if ((int)frames.size() >= MAX_FRAMES) {
+            stopRecording();
         }
     }
 }
 
 //--------------------------------------------------------------
 void ofApp::draw(){
-    ofSetBackgroundColor(127);
-    string text;
-    switch (operationMode) {
-        case MODE_RECORD_READY:
-             text = "Double tap to start";
-            maintextFont.drawString(text, (ofGetWidth() - maintextFont.stringWidth(text)) / 2, maintextFont.stringHeight(text) *4);
-            ofPushMatrix();
-            ofTranslate(x + scaledWidth, y);
-            ofScale(-1, 1);
-            grabber.draw(0, 0, scaledWidth, scaledHeight);
-            ofPopMatrix();
-            break;
-        case MODE_RECORDING:
-            text = "Recording";
-            maintextFont.drawString(text, (ofGetWidth() - maintextFont.stringWidth(text)) / 2, maintextFont.stringHeight(text) *4);
-            
-            ofPushMatrix();
-            ofTranslate(x + scaledWidth, y);
-            ofScale(-1, 1);
-            grabber.draw(0, 0, scaledWidth, scaledHeight);
-            ofPopMatrix();
-            break;
-        case MODE_PLAYBACK:
-             text = "Drag left and right to scroll";
-            maintextFont.drawString(text, (ofGetWidth() - maintextFont.stringWidth(text)) / 2, maintextFont.stringHeight(text) *4);
-            ofPushMatrix();
-            ofTranslate(x + scaledWidth, y); // Shift the pivot to the right side of the image
-            ofScale(-1, 1); // Flip horizontally
-            imageArray[frameToPlay].draw(0, 0, scaledWidth, scaledHeight);
-            ofPopMatrix();
+    ofBackground(30);
 
-            break;
-        case MODE_COUNTING_DOWN:
-            ofPushMatrix();
-            ofTranslate(x + scaledWidth, y); // Shift the pivot to the right side of the image
-            ofScale(-1, 1); // Flip horizontally
-            grabber.draw(0, 0, scaledWidth, scaledHeight);
-            ofPopMatrix();
-            
-            int currentTime = ofGetElapsedTimeMillis();
-            int elapsedTime = currentTime - startTime;
-            int remainingTime = countdownTime - elapsedTime;
-            int currentSecond = (remainingTime / 1000) + 1; // Calculate current second
-            
-            // Show the countdown number only at the start of each second and for 300 milliseconds
-            if (remainingTime % 1000 <= 700 && currentSecond != lastSecondShown) {
-                lastSecondShown = currentSecond; // Update the last shown second
-                string countdownString = ofToString(currentSecond);
-                ofPushStyle();
-                ofSetColor(255, 0, 0);
-                giantCounterFont.drawString(countdownString, (scaledWidth - giantCounterFont.stringWidth(countdownString)) / 2, (scaledHeight - giantCounterFont.stringHeight(countdownString)) / 2); // Draw the countdown number
-                ofPopStyle();
-          
-            }
-            
-            break;
+    string text;
+    switch (mode) {
+        case MODE_LIVE:          text = "Pick a timer, then turn around"; break;
+        case MODE_COUNTING_DOWN: text = "Get ready"; break;
+        case MODE_RECORDING:     text = "Recording"; break;
+        case MODE_PLAYBACK:      text = "Drag to look back. Double tap for live view"; break;
+    }
+    ofRectangle box = mainTextFont.getStringBoundingBox(text, 0, 0);
+    mainTextFont.drawString(text, textArea.getCenter().x - box.width / 2, textArea.getCenter().y + box.height / 2);
+
+    if (mode == MODE_PLAYBACK) {
+        if (frames.empty()) return;
+        if (playbackFrame != frameToPlay) {
+            playbackTexture.loadData(frames[frameToPlay]);
+            playbackFrame = frameToPlay;
+        }
+        drawFrame(playbackTexture, playbackTexture.getWidth(), playbackTexture.getHeight(), framesMirrored);
+
+        // Scrub bar under the picture
+        ofRectangle r = fitInto(playbackTexture.getWidth(), playbackTexture.getHeight(), videoArea);
+        float t = frames.size() > 1 ? frameToPlay / float(frames.size() - 1) : 0;
+        ofPushStyle();
+        ofSetColor(255, 80);
+        ofDrawRectangle(r.x, r.getBottom() - 8, r.width, 8);
+        ofSetColor(255);
+        ofDrawRectangle(r.x + t * (r.width - 8), r.getBottom() - 8, 8, 8);
+        ofPopStyle();
+        return;
     }
 
+    if (!grabber.isInitialized() || grabber.getWidth() == 0) return;
+    drawFrame(grabber, grabber.getWidth(), grabber.getHeight(), usingFrontCamera);
+    ofRectangle r = fitInto(grabber.getWidth(), grabber.getHeight(), videoArea);
+
+    if (mode == MODE_COUNTING_DOWN) {
+        int remaining = std::max(0, countdownMillis - int(ofGetElapsedTimeMillis() - countdownStart));
+        string number = ofToString(int(std::ceil(remaining / 1000.0f)));
+        // Each number starts bright and fades over its second.
+        float alpha = ofMap(remaining % 1000, 0, 1000, 60, 255, true);
+        ofRectangle nb = giantCounterFont.getStringBoundingBox(number, 0, 0);
+        float nx = r.getCenter().x - nb.width / 2 - nb.x;
+        float ny = r.getCenter().y - nb.height / 2 - nb.y;
+        ofPushStyle();
+        ofSetColor(0, alpha * 0.5f);
+        giantCounterFont.drawString(number, nx + 6, ny + 6);
+        ofSetColor(255, alpha);
+        giantCounterFont.drawString(number, nx, ny);
+        ofPopStyle();
+    }
+
+    if (mode == MODE_RECORDING) {
+        float dot = buttonSize * 0.25f;
+        float progress = frames.size() / float(MAX_FRAMES);
+        ofPushStyle();
+        ofSetColor(255, 40, 40, (ofGetElapsedTimeMillis() / 400) % 2 ? 255 : 120);
+        ofDrawCircle(r.x + dot * 2, r.y + dot * 2, dot);
+        ofSetColor(255, 40, 40);
+        ofDrawRectangle(r.x, r.getBottom() - 8, r.width * progress, 8);
+        ofPopStyle();
+    }
+}
+
+//--------------------------------------------------------------
+void ofApp::drawFrame(const ofBaseDraws & image, float w, float h, bool mirror){
+    ofRectangle r = fitInto(w, h, videoArea);
+    if (mirror) {
+        // Front camera: show it like a mirror, the same way live and in playback.
+        ofPushMatrix();
+        ofTranslate(r.getRight(), r.y);
+        ofScale(-1, 1);
+        image.draw(0, 0, r.width, r.height);
+        ofPopMatrix();
+    } else {
+        image.draw(r.x, r.y, r.width, r.height);
+    }
+}
+
+//--------------------------------------------------------------
+ofRectangle ofApp::fitInto(float w, float h, const ofRectangle & area) const {
+    if (w <= 0 || h <= 0) return area;
+    float s = std::min(area.width / w, area.height / h);
+    return ofRectangle(area.getCenter().x - w * s / 2, area.getCenter().y - h * s / 2, w * s, h * s);
 }
 
 //--------------------------------------------------------------
 void ofApp::exit(){
-    
+    grabber.close();
 }
 
 //--------------------------------------------------------------
 void ofApp::touchDown(ofTouchEventArgs & touch){
-    if (!isRecording && !imageArray.empty()) {
-         // Map touch coordinates to frame index based on orientation
-         float touchMapped;
-         if (currentOrientation == OF_ORIENTATION_DEFAULT || currentOrientation == OF_ORIENTATION_180) {
-             touchMapped = ofMap(touch.y, ofGetHeight(), 0, 0, ARRAYMAX);
-         } else {
-             touchMapped = ofMap(touch.x, ofGetWidth(), 0, 0, ARRAYMAX);
-         }
-         frameToPlay = int(touchMapped);
-         ofLogNotice() << "Frame to Play: " << frameToPlay;
-     }
+    touchMoved(touch);
 }
 
 //--------------------------------------------------------------
 void ofApp::touchMoved(ofTouchEventArgs & touch){
-    if (!isRecording && !imageArray.empty()) {
-         // Map touch coordinates to frame index based on orientation
-         float touchMapped;
-         if (currentOrientation == OF_ORIENTATION_DEFAULT || currentOrientation == OF_ORIENTATION_180) {
-             touchMapped = ofMap(touch.y, ofGetHeight(), 0, 0, ARRAYMAX);
-         } else {
-             touchMapped = ofMap(touch.x, ofGetWidth(), 0, 0, ARRAYMAX);
-         }
-         frameToPlay = int(touchMapped);
-         ofLogNotice() << "Frame to Play: " << frameToPlay;
-     }
+    if (mode != MODE_PLAYBACK || frames.empty()) return;
+    for (simpleButton * b : {&switchCameraButton, &fiveSecondDelayButton, &twoSecondDelayButton, &directCaptureButton}) {
+        if (b->inside(touch.x, touch.y)) return;
+    }
+    // Left to right moves forward in time, in any orientation.
+    frameToPlay = int(ofMap(touch.x, videoArea.x, videoArea.getRight(), 0, frames.size() - 1, true));
 }
-
-
 
 //--------------------------------------------------------------
 void ofApp::touchUp(ofTouchEventArgs & touch){
-    
 }
 
 //--------------------------------------------------------------
 void ofApp::touchDoubleTap(ofTouchEventArgs & touch){
-    
+    if (mode == MODE_PLAYBACK || mode == MODE_COUNTING_DOWN) {
+        // Back to the live view, freeing the recorded frames.
+        frames.clear();
+        playbackFrame = -1;
+        mode = MODE_LIVE;
+        if (pendingOrientation != OF_ORIENTATION_UNKNOWN) applyOrientation(pendingOrientation);
+    }
 }
 
-//------------------------------------------------------
+//--------------------------------------------------------------
 void ofApp::touchCancelled(ofTouchEventArgs & touch){
-    
 }
 
 //--------------------------------------------------------------
 void ofApp::lostFocus(){
-    
+    if (mode == MODE_RECORDING) stopRecording();
+    if (mode == MODE_COUNTING_DOWN) mode = MODE_LIVE;
 }
 
 //--------------------------------------------------------------
 void ofApp::gotFocus(){
-    
 }
 
 //--------------------------------------------------------------
 void ofApp::gotMemoryWarning(){
-    
+    if (mode == MODE_RECORDING) stopRecording();
 }
 
 //--------------------------------------------------------------
 void ofApp::deviceOrientationChanged(int newOrientation){
-    ofLogVerbose() << "Device orientation changed to " << newOrientation;
-    ///setupButtons();
-    // Retrieve aspect ratios
-    cameraAspectRatio = grabber.getWidth() / grabber.getHeight();
-    screenAspectRatio = ofGetWidth() / ofGetHeight();
-    
-    // Calculate the maximum height as 90% of the screen height
-    float maxHeight = ofGetHeight() * 0.9;
-    
-    // Determine the scaling factor based on the maximum allowable height
-    scale = maxHeight / grabber.getHeight();  // Start with scaling to the maximum height
-    scaledWidth = grabber.getWidth() * scale;
-    scaledHeight = grabber.getHeight() * scale;
-    
-    // If scaling to maximum height makes the width too large, adjust based on width
-    if (scaledWidth > ofGetWidth()) {
-        scale = ofGetWidth() / grabber.getWidth();  // Scale based on width to fit the screen
-        scaledWidth = grabber.getWidth() * scale;
-        scaledHeight = grabber.getHeight() * scale;
+    // UIDeviceOrientation 1-4 match OF_ORIENTATION_DEFAULT, _180, _90_LEFT, _90_RIGHT.
+    // 5 and 6 are face up / face down, which shouldn't change the layout.
+    if (newOrientation < 1 || newOrientation > 4) return;
+    ofOrientation orientation = (ofOrientation)newOrientation;
+    if (mode == MODE_RECORDING || mode == MODE_COUNTING_DOWN) {
+        // Don't restart the camera mid-recording; rotate once it's done.
+        pendingOrientation = orientation;
+        return;
     }
-    
-    // Position the image centered horizontally and vertically
-    x = (ofGetWidth() - scaledWidth) / 2;  // Center horizontally
-    y = (ofGetHeight() - scaledHeight) / 2;  // Center vertically
-    
-    // In cases where the scaled width is wider than the screen
-    if (scaledWidth > ofGetWidth()) {
-        x = -(scaledWidth - ofGetWidth()) / 2;  // Negative X to center the oversized image
+    if (orientation != ofGetOrientation()) applyOrientation(orientation);
+}
+
+//--------------------------------------------------------------
+bool ofApp::isPortrait() const {
+    ofOrientation o = ofGetOrientation();
+    return o == OF_ORIENTATION_DEFAULT || o == OF_ORIENTATION_180;
+}
+
+//--------------------------------------------------------------
+void ofApp::applyOrientation(ofOrientation orientation){
+    pendingOrientation = OF_ORIENTATION_UNKNOWN;
+    bool wasPortrait = isPortrait();
+    ofSetOrientation(orientation);
+    // ofxiOS sizes the grabber's frame buffer for the orientation it was
+    // started in, so switching between portrait and landscape needs a restart.
+    if (wasPortrait != isPortrait() && cameraID >= 0) {
+        startCamera(cameraID);
+    }
+    layout();
+}
+
+//--------------------------------------------------------------
+void ofApp::layout(){
+    float W = ofGetWidth();
+    float H = ofGetHeight();
+    std::vector<simpleButton *> buttons = {&switchCameraButton, &fiveSecondDelayButton, &twoSecondDelayButton, &directCaptureButton};
+    int n = buttons.size();
+
+    if (isPortrait()) {
+        // Buttons in a row along the bottom.
+        buttonSize = W / 6;
+        float barH = buttonSize * 1.5f;
+        float textH = std::max(buttonSize, H * 0.08f);
+        textArea.set(0, 0, W, textH);
+        videoArea.set(0, textH, W, H - textH - barH);
+        float gap = (W - n * buttonSize) / (n + 1);
+        for (int i = 0; i < n; i++) {
+            buttons[i]->set(gap + i * (buttonSize + gap), H - barH + (barH - buttonSize) / 2, buttonSize, buttonSize);
+        }
+    } else {
+        // Buttons in a column down the right side.
+        buttonSize = H / 6;
+        float barW = buttonSize * 1.5f;
+        float textH = std::max(buttonSize * 0.8f, H * 0.1f);
+        textArea.set(0, 0, W - barW, textH);
+        videoArea.set(0, textH, W - barW, H - textH);
+        float gap = (H - n * buttonSize) / (n + 1);
+        for (int i = 0; i < n; i++) {
+            buttons[i]->set(W - barW + (barW - buttonSize) / 2, gap + i * (buttonSize + gap), buttonSize, buttonSize);
+        }
     }
 }
 
-
-void ofApp::setupButtons() {
-    ofOrientation currentOrientation = ofGetOrientation();
-    //ofOrientation currentOrientation =  OF_ORIENTATION_DEFAULT;
-    float buttonWidth = ofGetWidth() / 9;
-    float buttonYPos, buttonXPos;
-    
-    // Check orientation to determine positioning
-    if (currentOrientation == OF_ORIENTATION_DEFAULT || currentOrientation == OF_ORIENTATION_180) {
-        buttonWidth = ofGetWidth() / 9;
-        // Portrait or upside-down: Buttons at the bottom
-        buttonYPos = ofGetHeight() - (buttonWidth * 2); // Single row at bottom
-        buttonXPos = buttonWidth; // Starting position for X
-    } else {
-        buttonWidth = ofGetHeight() / 9;
-        // Landscape left or right: Buttons down the side
-        buttonYPos = buttonWidth; // Starting position for Y
-        buttonXPos = ofGetWidth() - (buttonWidth * 2); // All buttons aligned to the right side
-    }
-    
-    // Setup buttons with dynamic positioning
+//--------------------------------------------------------------
+void ofApp::setupButtons(){
     switchCameraButton.setPath("button_icons/switch_cam_icon.png");
     switchCameraButton.buttonMessage = "SWITCH_CAM";
     switchCameraButton.buttonLabel = "Switch cam";
-    if (currentOrientation == OF_ORIENTATION_DEFAULT || currentOrientation == OF_ORIENTATION_180) {
-        switchCameraButton.set(buttonXPos, buttonYPos, buttonWidth, buttonWidth);
-    } else {
-        switchCameraButton.set(buttonXPos, buttonYPos, buttonWidth, buttonWidth);
-        buttonYPos += buttonWidth; // Increment Y position for the next button
-    }
-    
-    ofLog(OF_LOG_VERBOSE) << "switchCameraButton X pos: " << buttonXPos << " Y pos: " << buttonYPos << " Width: " << buttonWidth;
-    
-    
-    
+
     fiveSecondDelayButton.setPath("button_icons/5_sec_timer_icon.png");
     fiveSecondDelayButton.buttonMessage = "5_SEC_DELAY";
     fiveSecondDelayButton.buttonLabel = "5 second delay";
-    if (currentOrientation == OF_ORIENTATION_DEFAULT || currentOrientation == OF_ORIENTATION_180) {
-        fiveSecondDelayButton.set(buttonXPos * 3, buttonYPos, buttonWidth, buttonWidth);
-    } else {
-        fiveSecondDelayButton.set(buttonXPos * 3, buttonYPos, buttonWidth, buttonWidth);
-        buttonYPos += buttonWidth; // Increment Y position for the next button
-    }
-    ofLog(OF_LOG_VERBOSE) << "fiveSecondDelayButton X pos: " << buttonXPos *2 << " Y pos: " << buttonYPos << " Width: " << buttonWidth;
-    
+
     twoSecondDelayButton.setPath("button_icons/2_sec_timer_icon.png");
     twoSecondDelayButton.buttonMessage = "2_SEC_DELAY";
     twoSecondDelayButton.buttonLabel = "2 second delay";
-    if (currentOrientation == OF_ORIENTATION_DEFAULT || currentOrientation == OF_ORIENTATION_180) {
-        twoSecondDelayButton.set(buttonXPos * 5, buttonYPos, buttonWidth, buttonWidth);
-    } else {
-        twoSecondDelayButton.set(buttonXPos * 5, buttonYPos, buttonWidth, buttonWidth);
-        buttonYPos += buttonWidth; // Increment Y position for the next button
-    }
-    ofLog(OF_LOG_VERBOSE) << "twoSecondDelayButton X pos: " << buttonXPos *3 << " Y pos: " << buttonYPos << " Width: " << buttonWidth;
-    
-    
+
     directCaptureButton.setPath("button_icons/no_timer_icon.png");
     directCaptureButton.buttonMessage = "NO_SEC_DELAY";
     directCaptureButton.buttonLabel = "Capture";
-    if (currentOrientation == OF_ORIENTATION_DEFAULT || currentOrientation == OF_ORIENTATION_180) {
-        directCaptureButton.set(buttonXPos * 7, buttonYPos, buttonWidth, buttonWidth);
-    } else {
-        directCaptureButton.set(buttonXPos * 7, buttonYPos, buttonWidth, buttonWidth);
-    }
-    ofLog(OF_LOG_VERBOSE) << "directCaptureButton X pos: " << buttonXPos *4 << " Y pos: " << buttonYPos << " Width: " << buttonWidth;
-    
-    ofLogVerbose("ofApp::setupReviewModeButtons") << "Review mode buttons setup and disabled";
 }
 
-// Function to apply transformations based on the current orientation
-void ofApp::adjustForOrientation(ofOrientation orientation, float x, float y, float width, float height) {
-    orientation =  OF_ORIENTATION_DEFAULT;
-    switch (orientation) {
-        case OF_ORIENTATION_DEFAULT:
-            // No transformation needed
-            break;
-        case OF_ORIENTATION_180:
-            ofTranslate(x + width, y + height);
-            ofRotateDeg(180);
-            break;
-        case OF_ORIENTATION_90_RIGHT:
-            ofTranslate(x + width, y);
-            ofRotateDeg(90);
-            break;
-        case OF_ORIENTATION_90_LEFT:
-            ofTranslate(x, y + height);
-            ofRotateDeg(-90);
-            break;
-        default:
-            // Handle unknown orientation, possibly no transformation or default case
-            break;
-    }
-}
+//--------------------------------------------------------------
 void ofApp::gotMessage(ofMessage msg){
-    if (msg.message == "5_SEC_DELAY") {
-        runTimer(5000);
-        
-        
-    }
-    if (msg.message == "2_SEC_DELAY") {
-        runTimer(2000);
-    }
-    if (msg.message == "NO_SEC_DELAY") {
-        operationMode = MODE_RECORD_READY;
-    }
     if (msg.message == "SWITCH_CAM") {
-            if (grabberDeviceID == 0) {
-                grabber.setDeviceID(1);
-                grabberDeviceID = 1;
-                grabber.setup(1080, 1920);
-            } else if (grabberDeviceID == 1) { // Changed to 'else if' to prevent immediate switch-back
-                grabber.setDeviceID(0);
-                grabberDeviceID = 0;
-                grabber.setup(1080, 1920);
-            }
-        }
-}
-
-void ofApp::runTimer(int millis){
-    operationMode = MODE_COUNTING_DOWN;
-
-    
-    startTime = ofGetElapsedTimeMillis(); // Get the current time as the start time
-    countdownTime = millis;
-    isCountingDown = true;  // Start the countdown
-    lastSecondShown = -1;  // Initialize so that the first second will be shown immediately
-}
-
-void ofApp::startRecording(){
-    if (!isRecording) {
-        operationMode = MODE_RECORDING;
-    
-        isRecording = true;
-        imageArray.clear();
-        
-        ofLogNotice() << "Recording started";
+        if (mode == MODE_RECORDING) return;
+        int target = usingFrontCamera ? backCameraID : frontCameraID;
+        if (target >= 0) startCamera(target);
+        return;
     }
+    if (mode == MODE_RECORDING) return;
+    if (msg.message == "5_SEC_DELAY") startCountdown(5000);
+    if (msg.message == "2_SEC_DELAY") startCountdown(2000);
+    if (msg.message == "NO_SEC_DELAY") {
+        goSound.play();
+        startRecording();
+    }
+}
+
+//--------------------------------------------------------------
+void ofApp::findCameras(){
+    std::vector<ofVideoDevice> devices = grabber.listDevices();
+    for (size_t i = 0; i < devices.size(); i++) {
+        string name = ofToLower(devices[i].deviceName);
+        if (name.find("front") != string::npos) {
+            if (frontCameraID < 0) frontCameraID = i;
+        } else if (backCameraID < 0) {
+            backCameraID = i;
+        }
+    }
+    ofLogNotice("findCameras") << "front: " << frontCameraID << " back: " << backCameraID;
+}
+
+//--------------------------------------------------------------
+void ofApp::startCamera(int deviceID){
+    if (grabber.isInitialized()) grabber.close();
+    grabber.setDeviceID(deviceID);
+    if (!grabber.setup(CAPTURE_W, CAPTURE_H)) {
+        ofLogError("startCamera") << "Could not start camera " << deviceID;
+    }
+    cameraID = deviceID;
+    usingFrontCamera = (deviceID == frontCameraID);
+}
+
+//--------------------------------------------------------------
+void ofApp::startCountdown(int millis){
+    frames.clear();
+    playbackFrame = -1;
+    countdownStart = ofGetElapsedTimeMillis();
+    countdownMillis = millis;
+    lastBeepSecond = -1;
+    mode = MODE_COUNTING_DOWN;
+}
+
+//--------------------------------------------------------------
+void ofApp::startRecording(){
+    frames.clear();
+    playbackFrame = -1;
+    framesMirrored = usingFrontCamera;
+    mode = MODE_RECORDING;
+    ofLogNotice() << "Recording started";
+}
+
+//--------------------------------------------------------------
+void ofApp::stopRecording(){
+    ofLogNotice() << "Recording stopped, " << frames.size() << " frames";
+    frameToPlay = 0;
+    playbackFrame = -1;
+    mode = frames.empty() ? MODE_LIVE : MODE_PLAYBACK;
+    if (pendingOrientation != OF_ORIENTATION_UNKNOWN) applyOrientation(pendingOrientation);
 }

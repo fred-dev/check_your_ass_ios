@@ -41,3 +41,7 @@ Thumbs.db
 Desktop.ini
 *.swp
 .idea/
+
+# iOS projectGenerator output
+/ofxiOS-Info.plist
+/ofxiOS_Prefix.pch
